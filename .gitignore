@@ -10,3 +10,6 @@ __pycache__/
 
 # generated graph drawings from draw_dot()
 graphs/
+
+# model checkpoints
+*.pt
