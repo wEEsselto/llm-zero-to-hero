@@ -182,7 +182,7 @@ plt.axhline(loss_count, color='red', linestyle='--', label='counting model')
 plt.xlabel('iteration')
 plt.ylabel('loss')
 plt.legend()
-plt.savefig('02-makemore/nn_loss_curve.png', bbox_inches='tight')
+plt.savefig('02-makemore/bigram_loss_curve.png', bbox_inches='tight')
 
 #Visualize W in counts: learned probabilities x how often each character occurs as first char
 P_nn = W.exp()
@@ -197,4 +197,4 @@ for i in range(27):
         plt.text(j, i, chstr, ha='center', va='bottom', color='gray')
         plt.text(j, i, N_nn[i, j].item(), ha='center', va='top', color='gray')
 plt.axis('off')
-plt.savefig('02-makemore/nn_bigram_counts.png', bbox_inches='tight')
+plt.savefig('02-makemore/bigram_nn_counts.png', bbox_inches='tight')
