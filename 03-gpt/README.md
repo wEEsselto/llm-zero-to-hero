@@ -1,6 +1,6 @@
 # 03 · GPT: A decoder-only transformer
 
-A GPT-style language model that writes Shakespeare-like text, character by character. It's a **decoder-only transformer** with 10.8M parameters, trained on about 1 million characters of Shakespeare (input.txt).
+A GPT-style language model that writes Shakespeare-like text, character by character. It's a **decoder-only transformer** with 10.8M parameters, trained on about 1 million characters of Shakespeare (`input.txt`).
 
 ```bash
 # from the repository root
@@ -9,51 +9,98 @@ python 03-gpt/gpt.py
 
 ## Architecture
 
-Unlike the encoder-decoder model in *Attention Is All You Need*, a GPT only has the decoder part. It also uses **pre-norm**: each sub-layer normalizes its input and adds its result back to it (`x = x + sublayer(LayerNorm(x))`), instead of normalizing after the addition.
+Like the decoder in *Attention Is All You Need*, but without the encoder and with the LayerNorm before each sub-layer instead of after it (pre-norm):
 
-```mermaid
-flowchart TB
-    IN["input tokens (B, T)"] --> EMB["token embedding + position embedding<br/>(B, T, 384)"]
-    EMB --> X
-
-    subgraph BLOCK["Transformer block × 6"]
-        direction TB
-        X["x"] --> LN1["LayerNorm"]
-        LN1 --> ATT["masked multi-head attention<br/>6 heads × 64"]
-        ATT --> ADD1(("+"))
-        X -. residual .-> ADD1
-        ADD1 --> LN2["LayerNorm"]
-        LN2 --> FF["feed-forward<br/>384 → 1536 → 384, ReLU"]
-        FF --> ADD2(("+"))
-        ADD1 -. residual .-> ADD2
-    end
-
-    ADD2 --> LNF["LayerNorm"]
-    LNF --> HEAD["linear → logits<br/>(B, T, 65)"]
-```
-
-Attention is where tokens exchange information, the feed-forward layer is where each token processes it on its own. The residual connections give gradients a direct path back to the early layers.
+![GPT architecture](gpt_architecture.png)
 
 ## Attention
 
+Attention is the only place where tokens exchange information. Every token is represented by a vector $x$. From it, three learned weight matrices compute three smaller vectors, whose size is called the head size:
+
+$$q = x \cdot W_Q, \qquad k = x \cdot W_K, \qquad v = x \cdot W_V$$
+
+- **Query** $q$: "what am I looking for?"
+- **Key** $k$: "what do I contain?"
+- **Value** $v$: "what I pass on if someone attends to me"
+
+How much token $i$ attends to token $j$ is given by the dot product of $i$'s query with $j$'s key: the better they match, the more of $j$'s value flows into $i$. Since $W_Q$, $W_K$ and $W_V$ are learned, the model itself decides which tokens should match.
+
+For all tokens at once, with the rows of $Q$, $K$ and $V$ holding the vectors of every token:
+
 $$\text{Attention}(Q,K,V) = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}} + M\right)V$$
 
-- **Query, key, value:** each token emits a query ("what am I looking for?"), a key ("what do I contain?") and a value ("what I pass on"). The dot product of a query with a key decides how much one token attends to another.
-- **Causal mask $M$:** $-\infty$ above the diagonal, so after the softmax a token gets zero weight on later tokens. It can't look at the future it's supposed to predict.
-- **Scaling by $\sqrt{d_k}$:** without it, the dot products grow with the head size, the softmax saturates into an almost one-hot distribution, and the gradients vanish.
+where $d_k$ is the head size and $M$ is the causal mask.
 
-Shapes for one head, with batch $B$, context $T$ and head size $d_k = 64$:
+### A worked example
+
+Three tokens with hand-picked vectors and a head size of 2. (Words for readability; in this model the tokens are characters.)
+
+| Token | Query $q$ | Key $k$ | Value $v$ |
+|---|---|---|---|
+| The | (1, 0) | (1, 0) | (1, 0) |
+| cat | (0, 1) | (1, 1) | (0, 1) |
+| sat | (1, 1) | (0, 1) | (1, 1) |
+
+**1. Scores:** every query against every key, scaled by the square root of the head size. Row $i$ = how much token $i$ is interested in each token.
+
+$$\frac{QK^\top}{\sqrt{2}} = \frac{1}{\sqrt{2}}\begin{bmatrix} 1 & 1 & 0 \\ 0 & 1 & 1 \\ 1 & 2 & 1 \end{bmatrix} = \begin{bmatrix} 0.71 & 0.71 & 0 \\ 0 & 0.71 & 0.71 \\ 0.71 & 1.41 & 0.71 \end{bmatrix}$$
+
+**2. Causal mask:** set everything above the diagonal to $-\infty$. A token may only look at itself and earlier tokens, because the later ones are what it's trying to predict.
+
+$$\begin{bmatrix} 0.71 & -\infty & -\infty \\ 0 & 0.71 & -\infty \\ 0.71 & 1.41 & 0.71 \end{bmatrix}$$
+
+**3. Softmax per row:** turns the scores into weights that sum to 1. The $-\infty$ entries become exactly 0.
+
+$$\begin{bmatrix} 1 & 0 & 0 \\ 0.33 & 0.67 & 0 \\ 0.25 & 0.50 & 0.25 \end{bmatrix}$$
+
+"sat" attends most to "cat" (0.50), because its query matches cat's key best.
+
+**4. Weighted sum of the values:** each token's output is a mix of the values it attends to. For "sat":
+
+$$0.25 \cdot (1, 0) + 0.50 \cdot (0, 1) + 0.25 \cdot (1, 1) = (0.50,\ 0.75)$$
+
+### Why scale by the square root of the head size?
+
+A dot product sums one product per dimension, so the larger the head size, the larger the scores get. Without the scaling, the softmax puts almost all weight on a single token, and the gradients through it vanish.
+
+### Multi-head attention
+
+Each block runs several heads in parallel, each with its own weight matrices, and concatenates their outputs back to the size of the token vector. Different heads can learn different patterns, e.g. one looks at the previous character, another at the start of the current word.
+
+Shapes for one head:
 
 ```
-x (B, T, 384) → Q, K, V (B, T, 64) → scores QKᵀ (B, T, T) → output (B, T, 64)
+input:    (batch, context, token vector size)
+Q, K, V:  (batch, context, head size)
+scores:   (batch, context, context)
+output:   (batch, context, head size)
 ```
+
+## LayerNorm, feed-forward and residual connections
+
+**LayerNorm** normalizes each token's vector to mean 0 and variance 1 over its own entries, then applies a learned scale $\gamma$ and shift $\beta$:
+
+$$\text{LayerNorm}(x) = \gamma \cdot \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} + \beta$$
+
+It keeps the activations in a stable range across many blocks. Unlike BatchNorm, it doesn't depend on the other examples in the batch, so it behaves the same during training and when generating a single token.
+
+**Feed-forward** is a small MLP applied to every token separately, with the same weights for all of them. It expands the vector to 4× its size, applies ReLU, and projects it back:
+
+$$\text{FFN}(x) = W_2 \cdot \text{ReLU}(W_1 x + b_1) + b_2$$
+
+Attention moves information between tokens, mostly as weighted averages; the feed-forward is where each token processes what it has gathered.
+
+**Residual connections:** both sub-layers add their result to the token's vector instead of replacing it:
+
+$$x = x + \text{Attention}(\text{LayerNorm}(x)), \qquad x = x + \text{FFN}(\text{LayerNorm}(x))$$
+
+Since the gradient passes through a $+$ unchanged, it reaches the early blocks directly, which is what makes deep stacks trainable.
 
 ## Results
 
 Configuration: 6 layers, 6 heads, embedding size 384, context 256, batch 64, AdamW with learning rate 3e-4, 5,000 steps. Trained on a MacBook Air GPU (MPS) in **3.5 hours**.
 
 ![Train and val loss](gpt_loss_curve.png)
-
 
 **Generated text example**:
 
