@@ -6,5 +6,5 @@ Working through Andrej Karpathy's *Neural Networks: Zero to Hero*, then turning 
 
 - [x] 01 – micrograd
 - [x] 02 – makemore
-- [ ] 03 – GPT
+- [x] 03 – GPT
 - [ ] 04 – GPT to Llama
